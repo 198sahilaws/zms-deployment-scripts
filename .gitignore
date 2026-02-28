@@ -1,1 +1,45 @@
+# Secrets & credentials
 *.pem
+*.key
+*.pfx
+*.p12
+*.crt
+*.cer
+.env
+.env.*
+secrets.*
+*_secret*
+*_password*
+*credentials*
+
+# PowerShell
+*.ps1xml
+profile.ps1
+Microsoft.PowerShell_profile.ps1
+
+# Bash
+.bash_history
+.bash_profile
+.bashrc
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editors
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+*~
+
+# Temp / output
+tmp/
+temp/
+*.tmp
+*.bak
