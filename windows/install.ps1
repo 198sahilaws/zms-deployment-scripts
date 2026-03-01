@@ -58,6 +58,9 @@ $INSTALLER_PATH   = Join-Path $TEMP_DIR $MSI_FILENAME
 $DOWNLOAD_RETRY_COUNT     = 3
 $DOWNLOAD_RETRY_DELAY_SEC = 5
 
+# Enforce TLS 1.2 for all web requests in this session
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
 # Zscaler Microsegmentation download endpoints (production first, beta fallback)
 $ZMS_ENDPOINTS = @(
     @{
@@ -255,7 +258,8 @@ function Set-ProvisionKey {
     try {
         # Write the nonce value without any BOM, trailing newline, or extra whitespace
         # Using .NET method to ensure precise control over file content
-        [System.IO.File]::WriteAllText($PROVISION_KEY, $script:NonceValue, [System.Text.Encoding]::UTF8)
+        # Note: System.Text.Encoding.UTF8 includes a BOM; instantiate UTF8Encoding with $false to suppress it
+        [System.IO.File]::WriteAllText($PROVISION_KEY, $script:NonceValue, (New-Object System.Text.UTF8Encoding $false))
 
         Write-Log "provision_key file created successfully." -Level SUCCESS
 
@@ -302,11 +306,14 @@ function Test-SSLCertificate {
     )
 
     Write-Log "Running SSL certificate check against ${Fqdn}:${Port}..."
+    $tcpSocket = $null
+    $sslStream = $null
     try {
         $tcpSocket = New-Object Net.Sockets.TcpClient($Fqdn, $Port)
         $tcpStream = $tcpSocket.GetStream()
         $sslStream = New-Object Net.Security.SslStream($tcpStream, $false)
-        $sslStream.AuthenticateAsClient($Fqdn, $null, [System.Net.SecurityProtocolType]'Tls, Tls12', $false)
+        # Use SslProtocols (not SecurityProtocolType) as required by AuthenticateAsClient; TLS 1.2 only
+        $sslStream.AuthenticateAsClient($Fqdn, $null, [System.Security.Authentication.SslProtocols]::Tls12, $false)
 
         $certInfo = New-Object Security.Cryptography.X509Certificates.X509Certificate2($sslStream.RemoteCertificate)
 
@@ -317,13 +324,16 @@ function Test-SSLCertificate {
         Write-Log "  Thumbprint : $($certInfo.Thumbprint)" -Level INFO
         Write-Log "  Valid From : $($certInfo.NotBefore) to $($certInfo.NotAfter)" -Level INFO
 
-        $tcpSocket.Close()
         return $true
     }
     catch {
         Write-Log "SSL certificate check failed for ${Fqdn}: $($_.Exception.Message)" -Level WARN
         Write-Log "This may indicate packet inspection or a proxy intercepting TLS, which will break agent mTLS." -Level WARN
         return $false
+    }
+    finally {
+        if ($sslStream) { $sslStream.Dispose() }
+        if ($tcpSocket) { $tcpSocket.Close() }
     }
 }
 
@@ -338,9 +348,6 @@ function Resolve-DownloadEndpoint {
     Write-Log "========================================" -Level INFO
     Write-Log "STEP 2: Testing network connectivity" -Level INFO
     Write-Log "========================================" -Level INFO
-
-    # Force TLS 1.2 for this session
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
     $resolvedUrl = ""
 
@@ -407,9 +414,6 @@ function Get-ZMSInstaller {
     Write-Log "Source URL : $DownloadUrl"
     Write-Log "Destination: $INSTALLER_PATH"
 
-    # Ensure TLS 1.2 is enabled
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-
     # Remove stale installer if present
     if (Test-Path -Path $INSTALLER_PATH) {
         Write-Log "Removing existing installer file: $INSTALLER_PATH" -Level WARN
@@ -459,17 +463,25 @@ function Get-ZMSInstaller {
     }
 
     # Validate the MSI file signature (basic check: MSI magic bytes)
+    # Read only the first 4 bytes via FileStream to avoid loading the full MSI into memory
     try {
-        $bytes = [System.IO.File]::ReadAllBytes($INSTALLER_PATH)
+        $bytes = [byte[]]::new(4)
+        $fs = [System.IO.File]::OpenRead($INSTALLER_PATH)
+        try {
+            $read = $fs.Read($bytes, 0, 4)
+        }
+        finally {
+            $fs.Dispose()
+        }
         # MSI files (OLE Compound Documents) start with D0 CF 11 E0
-        if ($bytes.Length -ge 4 -and
+        if ($read -eq 4 -and
             $bytes[0] -eq 0xD0 -and $bytes[1] -eq 0xCF -and
             $bytes[2] -eq 0x11 -and $bytes[3] -eq 0xE0) {
             Write-Log "MSI file signature validated (OLE Compound Document)." -Level SUCCESS
         }
         else {
             Write-Log "WARNING: File does not have standard MSI header bytes. It may not be a valid MSI." -Level WARN
-            Write-Log "First 4 bytes: $($bytes[0..3] | ForEach-Object { '0x{0:X2}' -f $_ })" -Level WARN
+            Write-Log "First 4 bytes: $($bytes | ForEach-Object { '0x{0:X2}' -f $_ })" -Level WARN
         }
     }
     catch {
@@ -505,11 +517,12 @@ function Install-ZMSEnforcer {
 
     # Build the msiexec arguments matching the reference install.ps1
     $Arguments = @(
-        "PROVISIONKEY_FILE=`"$PROVISION_KEY`""
         "/i"
         "`"$INSTALLER_PATH`""
         "/qn"
-        "/l*v `"$msiLogFile`""
+        "/l*v"
+        "`"$msiLogFile`""
+        "PROVISIONKEY_FILE=`"$PROVISION_KEY`""
     )
 
     Write-Log "MSI installer    : $INSTALLER_PATH"
