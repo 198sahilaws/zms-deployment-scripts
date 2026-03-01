@@ -60,7 +60,7 @@ preflight_checks() {
     # 1. Check OS is Ubuntu and version is supported
     #    Supported Ubuntu versions (exact patch levels):
     #      16.04.7 LTS | 18.04.6 LTS | 20.04.6 LTS | 22.04.5 LTS | 24.04.2 LTS
-    SUPPORTED_VERSIONS="16.04.7 18.04.6 20.04.6 22.04.5 24.04.2"
+    SUPPORTED_VERSIONS="16.04 18.04 20.04 22.04 24.04"
 
     if [ ! -f /etc/os-release ]; then
         log_error "Cannot determine OS. /etc/os-release not found."
