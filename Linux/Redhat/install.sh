@@ -1,9 +1,9 @@
 #!/bin/bash
 #===============================================================================
 # Zscaler Microsegmentation (ZMS) Enforcer Provisioning Script
-# OS:       Ubuntu (Debian-based)
-# Usage:    sudo ./zscaler_zms_provision.sh [--nonce <nonce_value>]
-# Example:  sudo ./zscaler_zms_provision.sh --nonce "4|prod.zpath.net|v2cANh..."
+# OS:       RHEL (Red Hat Enterprise Linux)
+# Usage:    sudo ./install.sh [--nonce <nonce_value>]
+# Example:  sudo ./install.sh --nonce "4|prod.zpath.net|v2cANh..."
 #===============================================================================
 
 set -euo pipefail
@@ -11,12 +11,15 @@ set -euo pipefail
 #-------------------------------------------------------------------------------
 # Configuration
 #-------------------------------------------------------------------------------
-INSTALLER="eyez-agentmanager-default-1.amd64.deb"
+INSTALLER="eyez-agentmanager-default-1.x86_64.rpm"
 URL="https://eyez-dist.private.zscaler.com/linux"          # Production
 # URL="https://eyez-dist.zpabeta.net/linux"                # Beta
 DIR="/opt/zscaler/zms"
 LOG_FILE="/var/log/zscaler_zms_provision.log"
 PROVISION_KEY_FILENAME="provision_key"
+SUPPORTED_MAJOR_VERSIONS="7 8 9"
+RHEL7_MIN_MINOR=4                                          # Minimum RHEL 7 minor version
+PKG_MANAGER=""                                             # Set during pre-flight (dnf or yum)
 
 #-------------------------------------------------------------------------------
 # Logging
@@ -57,10 +60,7 @@ log_success() {
 preflight_checks() {
     log_info "Running pre-flight checks..."
 
-    # 1. Check OS is Ubuntu and version is supported
-    #    Supported Ubuntu versions (exact patch levels):
-    #      16.04.7 LTS | 18.04.6 LTS | 20.04.6 LTS | 22.04.5 LTS | 24.04.2 LTS
-    SUPPORTED_VERSIONS="16.04.7 18.04.6 20.04.6 22.04.5 24.04.2 24.04.3"
+    # 1. Check OS is RHEL and version is supported
 
     if [ ! -f /etc/os-release ]; then
         log_error "Cannot determine OS. /etc/os-release not found."
@@ -70,78 +70,86 @@ preflight_checks() {
     # Source os-release for ID and VERSION_ID
     . /etc/os-release
 
-    if [ "${ID:-}" != "ubuntu" ]; then
+    if [ "${ID:-}" != "rhel" ]; then
         log_error "Unsupported OS: ${PRETTY_NAME:-unknown}."
-        log_error "This script requires Ubuntu. Detected distribution: ${ID:-unknown}."
+        log_error "This script requires Red Hat Enterprise Linux. Detected: ${ID:-unknown}."
         exit 1
     fi
 
-    # Get the full version string (e.g., "22.04.5") — lsb_release gives the
-    # most reliable patch-level version; fall back to /etc/debian_version.
-    UBUNTU_FULL_VERSION=""
-    if command -v lsb_release >/dev/null 2>&1; then
-        UBUNTU_FULL_VERSION="$(lsb_release -rs 2>/dev/null)"        # e.g. "22.04"
-        UBUNTU_DESCRIPTION="$(lsb_release -ds 2>/dev/null)"         # e.g. "Ubuntu 22.04.5 LTS"
-        # lsb_release -rs may only return major.minor (22.04). Extract the
-        # full x.y.z from the description string if available.
-        if echo "$UBUNTU_DESCRIPTION" | grep -qoP '[0-9]+\.[0-9]+\.[0-9]+'; then
-            UBUNTU_FULL_VERSION="$(echo "$UBUNTU_DESCRIPTION" | grep -oP '[0-9]+\.[0-9]+\.[0-9]+')"
-        fi
+    # Extract major version (VERSION_ID is "7", "8", "8.6", "9.3", etc.)
+    RHEL_MAJOR_VERSION="$(echo "${VERSION_ID:-}" | cut -d'.' -f1)"
+
+    if [ -z "$RHEL_MAJOR_VERSION" ]; then
+        log_error "Could not determine RHEL major version from VERSION_ID='${VERSION_ID:-}'."
+        exit 1
     fi
 
-    # Fallback: parse PRETTY_NAME from os-release (e.g., "Ubuntu 22.04.5 LTS")
-    if [ -z "$UBUNTU_FULL_VERSION" ] || ! echo "$UBUNTU_FULL_VERSION" | grep -qP '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-        UBUNTU_FULL_VERSION="$(echo "${PRETTY_NAME:-}" | grep -oP '[0-9]+\.[0-9]+\.[0-9]+' || true)"
-    fi
-
-    # Final fallback: try /etc/debian_version or accept major.minor only
-    if [ -z "$UBUNTU_FULL_VERSION" ]; then
-        UBUNTU_FULL_VERSION="${VERSION_ID:-unknown}"
-        log_warn "Could only detect major.minor version: ${UBUNTU_FULL_VERSION}"
-    fi
-
-    log_info "Detected Ubuntu version: ${UBUNTU_FULL_VERSION}"
-
-    # Validate against supported list
-    VERSION_MATCHED=false
-    for supported in $SUPPORTED_VERSIONS; do
-        if [ "$UBUNTU_FULL_VERSION" = "$supported" ]; then
-            VERSION_MATCHED=true
+    # Validate major version is in the supported list
+    MAJOR_MATCHED=false
+    for supported in $SUPPORTED_MAJOR_VERSIONS; do
+        if [ "$RHEL_MAJOR_VERSION" = "$supported" ]; then
+            MAJOR_MATCHED=true
             break
         fi
     done
 
-    if [ "$VERSION_MATCHED" = false ]; then
+    if [ "$MAJOR_MATCHED" = false ]; then
         log_error "==========================================================="
-        log_error " UNSUPPORTED UBUNTU VERSION: ${UBUNTU_FULL_VERSION}"
+        log_error " UNSUPPORTED RHEL MAJOR VERSION: ${RHEL_MAJOR_VERSION}"
         log_error "==========================================================="
-        log_error ""
-        log_error " Zscaler ZMS Enforcer supports only the following versions:"
-        for v in $SUPPORTED_VERSIONS; do
-            log_error "   - Ubuntu ${v} LTS"
-        done
-        log_error ""
-        log_error " Please upgrade or re-image to a supported version before"
-        log_error " running this script. Aborting."
+        log_error " Zscaler ZMS Enforcer supports:"
+        log_error "   - RHEL 7.4 (kernel 3.10.0-693.el7.x86_64 or later)"
+        log_error "   - RHEL 8.x"
+        log_error "   - RHEL 9.x"
+        log_error " Please re-image to a supported version before running this"
+        log_error " script. Aborting."
         log_error "==========================================================="
         exit 1
     fi
 
-    log_success "Ubuntu ${UBUNTU_FULL_VERSION} LTS is a supported version."
+    # For RHEL 7, enforce minimum minor version 7.4.
+    # /etc/redhat-release is the most reliable source for the full version on RHEL 7
+    # since VERSION_ID in os-release typically only contains the major version ("7").
+    if [ "$RHEL_MAJOR_VERSION" = "7" ]; then
+        RHEL_FULL_VERSION=""
+
+        if [ -f /etc/redhat-release ]; then
+            RHEL_FULL_VERSION="$(grep -oE '[0-9]+\.[0-9]+' /etc/redhat-release | head -1)"
+        fi
+
+        # Fallback: VERSION_ID may already include the minor version (e.g., "7.4")
+        if [ -z "$RHEL_FULL_VERSION" ] && echo "${VERSION_ID:-}" | grep -qE '^7\.[0-9]+$'; then
+            RHEL_FULL_VERSION="${VERSION_ID}"
+        fi
+
+        RHEL_MINOR_VERSION="$(echo "${RHEL_FULL_VERSION:-7.0}" | cut -d'.' -f2)"
+
+        if [ -z "$RHEL_MINOR_VERSION" ] || [ "$RHEL_MINOR_VERSION" -lt "$RHEL7_MIN_MINOR" ]; then
+            log_error "==========================================================="
+            log_error " UNSUPPORTED RHEL 7 MINOR VERSION: ${RHEL_FULL_VERSION:-unknown}"
+            log_error "==========================================================="
+            log_error " Zscaler ZMS Enforcer requires RHEL 7.${RHEL7_MIN_MINOR} or later."
+            log_error " Detected: RHEL ${RHEL_FULL_VERSION:-7.x (unknown minor version)}"
+            log_error " Aborting."
+            log_error "==========================================================="
+            exit 1
+        fi
+
+        log_success "RHEL ${RHEL_FULL_VERSION} is a supported version."
+    else
+        # RHEL 8 or 9 — any minor version is accepted
+        log_success "RHEL ${VERSION_ID:-${RHEL_MAJOR_VERSION}} is a supported version."
+    fi
 
     # 2. Check running as root or with sudo
     if [ "$(id -u)" -ne 0 ]; then
         log_error "This script must be run with root/sudo privileges."
-        log_error "Re-run as:  sudo $0 $*"
+        log_error "Re-run as:  sudo $0 ${ORIGINAL_ARGS}"
         exit 1
     fi
     log_success "Running with root privileges (UID=$(id -u))."
 
-    # 3. Identify the invoking (non-root) user
-    CALLING_USER="${SUDO_USER:-$USER}"
-    log_info "Invoking user: $CALLING_USER"
-
-    # 4. Check that wget or curl is available
+    # 3. Check that wget or curl is available
     if command -v wget >/dev/null 2>&1; then
         log_success "wget is available."
     elif command -v curl >/dev/null 2>&1; then
@@ -151,14 +159,19 @@ preflight_checks() {
         exit 1
     fi
 
-    # 5. Check apt-get is available
-    if ! command -v apt-get >/dev/null 2>&1; then
-        log_error "apt-get not found. This script requires a Debian-based package manager."
+    # 4. Check dnf (RHEL 8/9) or yum (RHEL 7) is available
+    if command -v dnf >/dev/null 2>&1; then
+        PKG_MANAGER="dnf"
+        log_success "dnf is available."
+    elif command -v yum >/dev/null 2>&1; then
+        PKG_MANAGER="yum"
+        log_success "yum is available."
+    else
+        log_error "Neither dnf nor yum found. Cannot install packages."
         exit 1
     fi
-    log_success "apt-get is available."
 
-    # 6. Check disk space (minimum 500 MB free on /opt)
+    # 5. Check disk space (minimum 500 MB free on /opt)
     local avail_kb
     avail_kb=$(df --output=avail /opt 2>/dev/null | tail -1 | tr -d ' ')
     if [ -n "$avail_kb" ] && [ "$avail_kb" -lt 512000 ]; then
@@ -236,20 +249,21 @@ create_provision_key() {
 # Network connectivity test
 #-------------------------------------------------------------------------------
 test_network() {
-    local test_host="eyez-dist.private.zscaler.com"
+    local test_host
+    test_host="$(echo "$URL" | sed 's|https://||;s|/.*||')"
     log_info "Testing network connectivity to ${test_host}..."
 
     # Try a lightweight HEAD/connection check
-    if command -v curl >/dev/null 2>&1; then
-        if curl -sf --connect-timeout 10 --max-time 15 -o /dev/null "https://${test_host}"; then
-            log_success "Network connectivity verified via curl."
+    if command -v wget >/dev/null 2>&1; then
+        if wget -q --spider --timeout=10 "https://${test_host}" 2>/dev/null; then
+            log_success "Network connectivity verified via wget."
             return 0
         fi
     fi
 
-    if command -v wget >/dev/null 2>&1; then
-        if wget -q --spider --timeout=10 "https://${test_host}" 2>/dev/null; then
-            log_success "Network connectivity verified via wget."
+    if command -v curl >/dev/null 2>&1; then
+        if curl -sf --connect-timeout 10 --max-time 15 -o /dev/null "https://${test_host}"; then
+            log_success "Network connectivity verified via curl."
             return 0
         fi
     fi
@@ -259,7 +273,7 @@ test_network() {
 }
 
 #-------------------------------------------------------------------------------
-# Download file (from reference script, enhanced with logging)
+# Download file
 #-------------------------------------------------------------------------------
 download_file() {
     local src_url="$1"
@@ -289,7 +303,7 @@ download_file() {
 
     elif command -v curl >/dev/null 2>&1; then
         log_info "Using curl..."
-        if curl --tlsv1.2 --retry 3 --retry-all-errors \
+        if curl --tlsv1.2 --retry 3 \
                 --remote-name --create-dirs --output-dir "$dest_dir" "$src_url"; then
             log_success "Download complete (curl, TLSv1.2)."
             return 0
@@ -312,21 +326,21 @@ download_file() {
 }
 
 #-------------------------------------------------------------------------------
-# Install the deb package
+# Install the RPM package
 #-------------------------------------------------------------------------------
 install_package() {
-    local deb_path="/tmp/${INSTALLER}"
+    local rpm_path="/tmp/${INSTALLER}"
 
-    if [ ! -f "$deb_path" ]; then
-        log_error "Package not found at ${deb_path}. Download may have failed."
+    if [ ! -f "$rpm_path" ]; then
+        log_error "Package not found at ${rpm_path}. Download may have failed."
         exit 1
     fi
 
-    log_info "Installing deb package: ${deb_path}"
-    if apt-get install -y "$deb_path"; then
+    log_info "Installing RPM package: ${rpm_path} (using ${PKG_MANAGER})"
+    if "${PKG_MANAGER}" install -y "$rpm_path"; then
         log_success "Package installed successfully."
     else
-        log_error "Failed to install the deb package."
+        log_error "Failed to install the RPM package."
         log_error "Check the log for details: ${LOG_FILE}"
         exit 1
     fi
@@ -337,6 +351,7 @@ install_package() {
 # Parse CLI arguments
 #-------------------------------------------------------------------------------
 NONCE_ARG=""
+ORIGINAL_ARGS="$*"
 
 while [ $# -gt 0 ]; do
     case "$1" in
