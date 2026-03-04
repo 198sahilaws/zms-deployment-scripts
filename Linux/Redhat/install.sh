@@ -11,7 +11,7 @@ set -euo pipefail
 #-------------------------------------------------------------------------------
 # Configuration
 #-------------------------------------------------------------------------------
-INSTALLER="eyez-agentmanager-default-1.x86_64.rpm"
+INSTALLER="eyez-agentmanager-default-1.el7.x86_64.rpm"
 URL="https://eyez-dist.private.zscaler.com/linux"          # Production
 # URL="https://eyez-dist.zpabeta.net/linux"                # Beta
 DIR="/opt/zscaler/zms"
