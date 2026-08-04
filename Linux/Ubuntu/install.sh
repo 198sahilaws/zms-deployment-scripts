@@ -17,7 +17,7 @@ URL="https://eyez-dist.private.zscaler.com/linux"          # Production
 DIR="/opt/zscaler/zms"
 LOG_FILE="/var/log/zscaler_zms_provision.log"
 PROVISION_KEY_FILENAME="provision_key"
-SUPPORTED_VERSIONS="16.04.7 18.04.6 20.04.6 22.04.5 24.04.2 24.04.3"
+SUPPORTED_VERSIONS="16.04.7 18.04.6 20.04.6 22.04.5 24.04.2 24.04.3 24.04.4 26.04.2"
 
 #-------------------------------------------------------------------------------
 # Logging
