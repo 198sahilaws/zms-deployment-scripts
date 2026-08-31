@@ -17,6 +17,7 @@ URL="https://eyez-dist.private.zscaler.com/linux"          # Production
 DIR="/opt/zscaler/zms"
 LOG_FILE="/var/log/zscaler_zms_provision.log"
 PROVISION_KEY_FILENAME="provision_key"
+STAGE_DIR=""                                               # Private download staging dir (set at runtime)
 SUPPORTED_VERSIONS="2 2023"
 PKG_MANAGER=""                                             # Set during pre-flight (dnf or yum)
 
@@ -102,7 +103,7 @@ preflight_checks() {
     # 2. Check running as root or with sudo
     if [ "$(id -u)" -ne 0 ]; then
         log_error "This script must be run with root/sudo privileges."
-        log_error "Re-run as:  sudo $0 ${ORIGINAL_ARGS}"
+        log_error "Re-run as:  sudo $0 ${REDACTED_ARGS}"
         exit 1
     fi
     log_success "Running with root privileges (UID=$(id -u))."
@@ -147,10 +148,24 @@ preflight_checks() {
 #-------------------------------------------------------------------------------
 # Create required directories
 #-------------------------------------------------------------------------------
+cleanup_stage() {
+    if [ -n "${STAGE_DIR:-}" ] && [ -d "$STAGE_DIR" ]; then
+        rm -rf "$STAGE_DIR"
+    fi
+}
+
 create_directories() {
     log_info "Creating directory structure: ${DIR}/var"
     mkdir -p "${DIR}/var"
     log_success "Directory created."
+
+    # Stage the download in a private, unpredictable directory.
+    # /tmp is world-writable: downloading to a fixed name there would let any
+    # local user pre-plant a package that this script then installs as root.
+    STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/zms-provision.XXXXXXXX")"
+    chmod 700 "$STAGE_DIR"
+    trap cleanup_stage EXIT
+    log_success "Staging directory created: ${STAGE_DIR}"
     echo ""
 }
 
@@ -246,7 +261,7 @@ download_file() {
 
     if command -v wget >/dev/null 2>&1; then
         log_info "Using wget..."
-        if wget -N --secure-protocol=TLSv1_2 --tries=3 \
+        if wget --secure-protocol=TLSv1_2 --tries=3 \
                 --retry-connrefused --retry-on-host-error \
                 --directory-prefix="$dest_dir" "$src_url"; then
             log_success "Download complete (wget, TLSv1.2)."
@@ -254,7 +269,7 @@ download_file() {
         fi
 
         log_warn "Primary wget attempt failed. Trying fall-back options..."
-        if wget -N --tries=3 --directory-prefix="$dest_dir" "$src_url"; then
+        if wget --tries=3 --directory-prefix="$dest_dir" "$src_url"; then
             log_success "Download complete (wget, fall-back)."
             return 0
         fi
@@ -289,7 +304,7 @@ download_file() {
 # Install the RPM package
 #-------------------------------------------------------------------------------
 install_package() {
-    local rpm_path="/tmp/${INSTALLER}"
+    local rpm_path="${STAGE_DIR}/${INSTALLER}"
 
     if [ ! -f "$rpm_path" ]; then
         log_error "Package not found at ${rpm_path}. Download may have failed."
@@ -311,7 +326,7 @@ install_package() {
 # Parse CLI arguments
 #-------------------------------------------------------------------------------
 NONCE_ARG=""
-ORIGINAL_ARGS="$*"
+REDACTED_ARGS=""        # Args with the nonce masked - safe to print to console/log
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -340,6 +355,11 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+# Build a log-safe rendering of the arguments (the nonce is a live secret).
+if [ -n "$NONCE_ARG" ]; then
+    REDACTED_ARGS="--nonce <redacted>"
+fi
+
 #-------------------------------------------------------------------------------
 # Main
 #-------------------------------------------------------------------------------
@@ -350,7 +370,7 @@ main() {
     get_nonce
     create_provision_key
     test_network
-    download_file "${URL}/${INSTALLER}" "/tmp"
+    download_file "${URL}/${INSTALLER}" "$STAGE_DIR"
     install_package
 
     echo ""

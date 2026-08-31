@@ -1,9 +1,17 @@
 #!/bin/bash
 #===============================================================================
 # Zscaler Microsegmentation (ZMS) Enforcer Provisioning Script
-# OS:       Ubuntu (Debian-based)
-# Usage:    sudo ./zscaler_zms_provision.sh [--nonce <nonce_value>]
-# Example:  sudo ./zscaler_zms_provision.sh --nonce "4|prod.zpath.net|v2cANh..."
+# OS:       SUSE Linux Enterprise Server (SLES 15, SLES 16)
+# Agent:    Requires ZMS agent / agent manager 1.11.1 or later
+# Usage:    sudo ./install.sh [--nonce <nonce_value>]
+# Example:  sudo ./install.sh --nonce "4|prod.zpath.net|v2cANh..."
+#
+# NOTE ON THE PACKAGE:
+#   This script pulls the same el7-built RPM used by the RHEL and Amazon Linux
+#   scripts. Zscaler has not published a SLES-specific package name. If the
+#   el7 RPM's dependencies do not resolve on SLES (different provides names for
+#   glibc/systemd are the usual cause), ask Zscaler for the SLES build and
+#   change INSTALLER below - that is the only line that needs to change.
 #===============================================================================
 
 set -euo pipefail
@@ -11,14 +19,14 @@ set -euo pipefail
 #-------------------------------------------------------------------------------
 # Configuration
 #-------------------------------------------------------------------------------
-INSTALLER="eyez-agentmanager-default-1.amd64.deb"
+INSTALLER="eyez-agentmanager-default-1.el7.x86_64.rpm"
 URL="https://eyez-dist.private.zscaler.com/linux"          # Production
 # URL="https://eyez-dist.zpabeta.net/linux"                # Beta
 DIR="/opt/zscaler/zms"
 LOG_FILE="/var/log/zscaler_zms_provision.log"
 PROVISION_KEY_FILENAME="provision_key"
 STAGE_DIR=""                                               # Private download staging dir (set at runtime)
-SUPPORTED_VERSIONS="16.04.7 18.04.6 20.04.6 22.04.5 24.04.2 24.04.3 24.04.4 26.04.2"
+SUPPORTED_MAJOR_VERSIONS="15 16"
 
 #-------------------------------------------------------------------------------
 # Logging
@@ -59,7 +67,7 @@ log_success() {
 preflight_checks() {
     log_info "Running pre-flight checks..."
 
-    # 1. Check OS is Ubuntu and version is supported (see SUPPORTED_VERSIONS in config)
+    # 1. Check OS is SLES and version is supported
 
     if [ ! -f /etc/os-release ]; then
         log_error "Cannot determine OS. /etc/os-release not found."
@@ -69,64 +77,50 @@ preflight_checks() {
     # Source os-release for ID and VERSION_ID
     . /etc/os-release
 
-    if [ "${ID:-}" != "ubuntu" ]; then
-        log_error "Unsupported OS: ${PRETTY_NAME:-unknown}."
-        log_error "This script requires Ubuntu. Detected distribution: ${ID:-unknown}."
+    # SLES reports ID="sles"; SLES for SAP reports ID="sles_sap" and is the
+    # same base platform, so accept both. openSUSE (ID=opensuse-*) is not
+    # a supported platform for the ZMS Enforcer.
+    case "${ID:-}" in
+        sles|sles_sap)
+            ;;
+        *)
+            log_error "Unsupported OS: ${PRETTY_NAME:-unknown}."
+            log_error "This script requires SUSE Linux Enterprise Server. Detected: ${ID:-unknown}."
+            exit 1
+            ;;
+    esac
+
+    # VERSION_ID is "15.5", "15.6", "16.0", etc. Extract the major version.
+    SLES_MAJOR_VERSION="$(echo "${VERSION_ID:-}" | cut -d'.' -f1)"
+
+    if [ -z "$SLES_MAJOR_VERSION" ]; then
+        log_error "Could not determine SLES major version from VERSION_ID='${VERSION_ID:-}'."
         exit 1
     fi
 
-    # Get the full version string (e.g., "22.04.5") — lsb_release gives the
-    # most reliable patch-level version; fall back to /etc/debian_version.
-    UBUNTU_FULL_VERSION=""
-    if command -v lsb_release >/dev/null 2>&1; then
-        UBUNTU_FULL_VERSION="$(lsb_release -rs 2>/dev/null)"        # e.g. "22.04"
-        UBUNTU_DESCRIPTION="$(lsb_release -ds 2>/dev/null)"         # e.g. "Ubuntu 22.04.5 LTS"
-        # lsb_release -rs may only return major.minor (22.04). Extract the
-        # full x.y.z from the description string if available.
-        if echo "$UBUNTU_DESCRIPTION" | grep -qE '[0-9]+\.[0-9]+\.[0-9]+'; then
-            UBUNTU_FULL_VERSION="$(echo "$UBUNTU_DESCRIPTION" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
-        fi
-    fi
-
-    # Fallback: parse PRETTY_NAME from os-release (e.g., "Ubuntu 22.04.5 LTS")
-    if [ -z "$UBUNTU_FULL_VERSION" ] || ! echo "$UBUNTU_FULL_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-        UBUNTU_FULL_VERSION="$(echo "${PRETTY_NAME:-}" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)"
-    fi
-
-    # Final fallback: try /etc/debian_version or accept major.minor only
-    if [ -z "$UBUNTU_FULL_VERSION" ]; then
-        UBUNTU_FULL_VERSION="${VERSION_ID:-unknown}"
-        log_warn "Could only detect major.minor version: ${UBUNTU_FULL_VERSION}"
-    fi
-
-    log_info "Detected Ubuntu version: ${UBUNTU_FULL_VERSION}"
-
-    # Validate against supported list
-    VERSION_MATCHED=false
-    for supported in $SUPPORTED_VERSIONS; do
-        if [ "$UBUNTU_FULL_VERSION" = "$supported" ]; then
-            VERSION_MATCHED=true
+    # Validate major version is in the supported list
+    MAJOR_MATCHED=false
+    for supported in $SUPPORTED_MAJOR_VERSIONS; do
+        if [ "$SLES_MAJOR_VERSION" = "$supported" ]; then
+            MAJOR_MATCHED=true
             break
         fi
     done
 
-    if [ "$VERSION_MATCHED" = false ]; then
+    if [ "$MAJOR_MATCHED" = false ]; then
         log_error "==========================================================="
-        log_error " UNSUPPORTED UBUNTU VERSION: ${UBUNTU_FULL_VERSION}"
+        log_error " UNSUPPORTED SLES MAJOR VERSION: ${SLES_MAJOR_VERSION}"
         log_error "==========================================================="
-        echo ""
-        log_error " Zscaler ZMS Enforcer supports only the following versions:"
-        for v in $SUPPORTED_VERSIONS; do
-            log_error "   - Ubuntu ${v} LTS"
-        done
-        echo ""
-        log_error " Please upgrade or re-image to a supported version before"
-        log_error " running this script. Aborting."
+        log_error " Zscaler ZMS Enforcer supports:"
+        log_error "   - SUSE Linux Enterprise Server 15 (all service packs)"
+        log_error "   - SUSE Linux Enterprise Server 16"
+        log_error " Please re-image to a supported version before running this"
+        log_error " script. Aborting."
         log_error "==========================================================="
         exit 1
     fi
 
-    log_success "Ubuntu ${UBUNTU_FULL_VERSION} LTS is a supported version."
+    log_success "${PRETTY_NAME:-SLES ${VERSION_ID}} is a supported version."
 
     # 2. Check running as root or with sudo
     if [ "$(id -u)" -ne 0 ]; then
@@ -143,15 +137,16 @@ preflight_checks() {
         log_success "curl is available."
     else
         log_error "Neither wget nor curl is installed. Install one and re-run."
+        log_error "On SLES:  zypper --non-interactive install wget"
         exit 1
     fi
 
-    # 4. Check apt-get is available
-    if ! command -v apt-get >/dev/null 2>&1; then
-        log_error "apt-get not found. This script requires a Debian-based package manager."
+    # 4. Check zypper is available (SLES package manager)
+    if ! command -v zypper >/dev/null 2>&1; then
+        log_error "zypper not found. This script requires the SUSE package manager."
         exit 1
     fi
-    log_success "apt-get is available."
+    log_success "zypper is available."
 
     # 5. Check disk space (minimum 500 MB free on /opt)
     local avail_kb
@@ -269,7 +264,7 @@ test_network() {
 }
 
 #-------------------------------------------------------------------------------
-# Download file (from reference script, enhanced with logging)
+# Download file
 #-------------------------------------------------------------------------------
 download_file() {
     local src_url="$1"
@@ -322,21 +317,28 @@ download_file() {
 }
 
 #-------------------------------------------------------------------------------
-# Install the deb package
+# Install the RPM package
 #-------------------------------------------------------------------------------
 install_package() {
-    local deb_path="${STAGE_DIR}/${INSTALLER}"
+    local rpm_path="${STAGE_DIR}/${INSTALLER}"
 
-    if [ ! -f "$deb_path" ]; then
-        log_error "Package not found at ${deb_path}. Download may have failed."
+    if [ ! -f "$rpm_path" ]; then
+        log_error "Package not found at ${rpm_path}. Download may have failed."
         exit 1
     fi
 
-    log_info "Installing deb package: ${deb_path}"
-    if apt-get install -y "$deb_path"; then
+    log_info "Installing RPM package: ${rpm_path} (using zypper)"
+
+    # --allow-unsigned-rpm matches the effective behaviour of the RHEL/Amazon
+    # Linux scripts, where dnf/yum do not GPG-check a local package by default.
+    # Signed packages are still verified.
+    if zypper --non-interactive install --allow-unsigned-rpm "$rpm_path"; then
         log_success "Package installed successfully."
     else
-        log_error "Failed to install the deb package."
+        log_error "Failed to install the RPM package."
+        log_error "If this failed on unresolved dependencies, the el7-built package"
+        log_error "may not be compatible with this SLES release — request the SLES"
+        log_error "build from Zscaler and update INSTALLER at the top of this script."
         log_error "Check the log for details: ${LOG_FILE}"
         exit 1
     fi
