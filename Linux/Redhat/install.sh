@@ -18,7 +18,7 @@ DIR="/opt/zscaler/zms"
 LOG_FILE="/var/log/zscaler_zms_provision.log"
 PROVISION_KEY_FILENAME="provision_key"
 STAGE_DIR=""                                               # Private download staging dir (set at runtime)
-SUPPORTED_MAJOR_VERSIONS="7 8 9"
+SUPPORTED_MAJOR_VERSIONS="7 8 9 10"
 RHEL7_MIN_MINOR=4                                          # Minimum RHEL 7 minor version
 PKG_MANAGER=""                                             # Set during pre-flight (dnf or yum)
 
