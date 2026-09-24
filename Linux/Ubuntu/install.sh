@@ -18,7 +18,7 @@ DIR="/opt/zscaler/zms"
 LOG_FILE="/var/log/zscaler_zms_provision.log"
 PROVISION_KEY_FILENAME="provision_key"
 STAGE_DIR=""                                               # Private download staging dir (set at runtime)
-SUPPORTED_VERSIONS="16.04 18.04 22.04 24.04 26.04"
+SUPPORTED_VERSIONS="16.04 18.04 22.04.5 24.04 26.04"
 
 #-------------------------------------------------------------------------------
 # Logging
